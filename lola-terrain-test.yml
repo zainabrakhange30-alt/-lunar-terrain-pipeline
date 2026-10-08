@@ -1,0 +1,60 @@
+name: LOLA terrain extraction (test)
+
+# Temporary data-processing workflow. It does NOT touch the Lunar Explorer app.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Process only the first N Gazetteer sites (0 = all 9,087). Use 20 for a first smoke test."
+        default: "20"
+      mode:
+        description: "auto | vsicurl | download"
+        default: "auto"
+
+permissions:
+  contents: write        # needed only to publish the small result file to the 'terrain-result' branch
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install libraries
+        run: pip install numpy rasterio
+      - name: Unit tests (terrain maths + pipeline logic on a fake in-memory DEM)
+        run: |
+          python tests/test_terrain_math.py
+          python tests/test_pipeline_fake_dem.py
+      - name: Extract terrain from the official USGS DEM
+        run: python scripts/extract_terrain.py --limit "${{ inputs.limit || '0' }}" --mode "${{ inputs.mode || 'auto' }}"
+      - name: Show the log in the run summary
+        if: always()
+        run: |
+          echo "### Terrain run log (last 80 lines)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 80 terrain_run_log.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "no log written" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the result as a downloadable artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terrain-result
+          path: |
+            terrain_result.json
+            terrain_run_log.txt
+          if-no-files-found: warn
+      - name: Publish the small result to the 'terrain-result' branch
+        if: success()
+        run: |
+          mkdir -p /tmp/out && cp terrain_result.json terrain_run_log.txt /tmp/out/
+          git config user.name "github-actions" && git config user.email "actions@users.noreply.github.com"
+          git checkout --orphan terrain-result
+          git rm -rf . > /dev/null 2>&1 || true
+          cp /tmp/out/terrain_result.json /tmp/out/terrain_run_log.txt .
+          git add terrain_result.json terrain_run_log.txt
+          git commit -m "LOLA terrain extraction result"
+          git push -f origin terrain-result
